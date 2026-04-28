@@ -748,7 +748,7 @@
     function setDimCount() {
       let n = parseInt(document.getElementById('dimCount').value) || 6; n = Math.max(3, Math.min(36, n)); document.getElementById('dimCount').value = n;
       const old = state.n; state.n = n;
-      if (n > old) { for (let i = old; i < n; i++) { state.labels.push('维' + String.fromCharCode(65 + i)); state.values.push(0); state.colors.push(COLOR_STOPS[i % COLOR_STOPS.length]) } }
+      if (n > old) { for (let i = old; i < n; i++) { state.labels.push('维' + String.fromCharCode(65 + i)); state.values.push(Math.round(Math.random() * Math.max(0, state.maxVal))); state.colors.push(COLOR_STOPS[i % COLOR_STOPS.length]) } }
       else { state.labels = state.labels.slice(0, n); state.values = state.values.slice(0, n); state.colors = state.colors.slice(0, n) }
       const ti = document.getElementById('chartTitle');
       if (ti && ti.value === state.title) { ti.value = getDefTitle(n); state.title = getDefTitle(n) }
@@ -767,15 +767,28 @@
       handle.call(d3.drag().on('start', function () { dragging = true; svg.style('cursor', 'grabbing') }).on('drag', function (e) {
         if (!dragging) return; const [mx, my] = d3.pointer(e, svg.node()), dx = mx - cx, dy = my - cy;
         const proj = dx * Math.cos(angle) + dy * Math.sin(angle);
-        const lo = state.minVal;
-        const hi = Math.max(state.maxVal, lo + 0.01);
-        let v = clamp(Math.round(lo + (proj / maxR) * (hi - lo)));
+        const ov = Math.max(0, state.minVal);
+        let v;
+        if (proj < 0) {
+          // 负半轴：proj∈[-maxR, 0) → v∈[minVal, originVal)
+          v = ov + (proj / maxR) * (ov - state.minVal);
+        } else {
+          // 正半轴：proj∈[0, maxR] → v∈[originVal, maxVal]
+          v = ov + (proj / maxR) * (Math.max(state.maxVal, ov + 0.01) - ov);
+        }
+        v = clamp(Math.round(v));
         if (state.gradeMode) { v = Math.max(0, v); const gIdx = Math.round(v / 100 * (GRADES.length - 1)); v = Math.round(gIdx / (GRADES.length - 1) * 100); }
         state.values[i] = v; syncSlider(i, v); drawRadarPoints(svg, state.n, cx, cy, maxR);
       }).on('end', function () { dragging = false; svg.style('cursor', 'default'); draw() }));
     }
 
     // --- Radar ---
+    var svg_originVal = 0, svg_maxVal = 100, svg_mr = 200, svg_minVal = 0;
+    function valToRadius(v) {
+      // 原点=svg_originVal，负半轴延伸，正半轴延伸
+      if (v < svg_originVal) return (v - svg_originVal) / (svg_originVal - svg_minVal) * svg_mr;
+      return (v - svg_originVal) / (svg_maxVal - svg_originVal) * svg_mr;
+    }
     function drawRadar(container) {
       const n = state.n, size = Math.min((container.parentElement.clientWidth || 680) - 24, 720), av = size + 30, mar = 75, mr = (size - mar * 2) / 2, cx = av / 2, cy = av / 2;
       const svg = d3.select(container).append('svg').attr('width', av).attr('height', av).attr('viewBox', '0 0 ' + av + ' ' + av);
@@ -783,19 +796,25 @@
       const as = Math.PI * 2 / n;
       const gridN = 5; // 将区间分成 gridN 份（即 gridN+1 条网格线）
       // 区间：[minVal, maxVal]，保证最大值>0 且最小值<最大值
-      const lo = state.minVal;
-      const hi = Math.max(state.maxVal, lo + 0.01); // 保证区间非空
-      const span = hi - lo;
-      function valToRadius(v) { return ((v - lo) / (hi - lo)) * mr; }
-      // 原点显示（max(0, minVal) 的标记，圆心位置）
       const originVal = Math.max(0, state.minVal);
+      svg_originVal = originVal; svg_minVal = state.minVal; svg_maxVal = Math.max(state.maxVal, originVal + 0.01); svg_mr = mr;
       svg.append('circle').attr('cx', cx).attr('cy', cy).attr('r', 2).attr('fill', '#2c3e50');
       svg.append('text').attr('x', cx + 3).attr('y', cy + 4).attr('fill', '#a0b4c8').attr('font-size', '10px').text(Math.round(originVal));
-      for (let g = 0; g <= gridN; g++) {
-        const rv = lo + (span / gridN) * g;
-        const r = valToRadius(rv), pts = []; for (let i = 0; i < n; i++) { const a = as * i - Math.PI / 2; pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]) }
-        svg.append('polygon').attr('points', pts.map(p => p.join(',')).join(' ')).attr('fill', 'none').attr('stroke', '#dde4ee').attr('stroke-width', 1);
-        svg.append('text').attr('x', cx + 3).attr('y', cy - r + 4).attr('fill', '#a0b4c8').attr('font-size', '10px').text(Math.round(rv));
+      // 正半轴画多边形网格线，负半轴只标数字
+      for (let sign = -1; sign <= 1; sign += 2) {
+        const sideLo = sign < 0 ? svg_minVal : svg_originVal;
+        const sideHi = sign < 0 ? svg_originVal : svg_maxVal;
+        const sideSpan = sideHi - sideLo;
+        if (sideSpan <= 0) continue;
+        for (let g = 0; g <= gridN; g++) {
+          const rv = sideLo + sideSpan / gridN * g;
+          const r = valToRadius(rv);
+          if (sign > 0) {
+            const pts = []; for (let i = 0; i < n; i++) { const a = as * i - Math.PI / 2; pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]) }
+            svg.append('polygon').attr('points', pts.map(p => p.join(',')).join(' ')).attr('fill', 'none').attr('stroke', '#dde4ee').attr('stroke-width', 1);
+          }
+          svg.append('text').attr('x', cx + 3).attr('y', cy - r + 4).attr('fill', '#a0b4c8').attr('font-size', '10px').text(Math.round(rv));
+        }
       }
       const ad = [];
       for (let i = 0; i < n; i++) { const a = as * i - Math.PI / 2; svg.append('line').attr('x1', cx).attr('y1', cy).attr('x2', cx + mr * Math.cos(a)).attr('y2', cy + mr * Math.sin(a)).attr('stroke', '#e0e7f0').attr('stroke-width', 1); ad.push({ i, lx: cx + (mr + 40) * Math.cos(a), ly: cy + (mr + 40) * Math.sin(a) }) }
@@ -805,9 +824,6 @@
 
     function drawRadarPoints(svg, n, cx, cy, mr, as) {
       if (!as) as = Math.PI * 2 / n;
-      const lo = state.minVal;
-      const hi = Math.max(state.maxVal, lo + 0.01);
-      function valToRadius(v) { return ((v - lo) / (hi - lo)) * mr; }
       svg.selectAll('.data-layer').remove(); const g = svg.append('g').attr('class', 'data-layer');
       const pts = []; for (let i = 0; i < n; i++) { const a = as * i - Math.PI / 2, rr = valToRadius(state.values[i]); pts.push([cx + rr * Math.cos(a), cy + rr * Math.sin(a)]) }
       const gid = 'rg_' + (Date.now());
